@@ -1,0 +1,32 @@
+# Render blueprint: cloud relay for the TRA motorcycle ownership-transfer bot.
+# Field staff phones (MotoPack) upload zips here. The bot on the Windows PC
+# polls /api/jobs, downloads new zips, processes them, and posts back results.
+# Everyone with the public URL can watch the dashboard read-only.
+services:
+  - type: web
+    name: elegansky-moto-relay
+    runtime: node
+    plan: starter
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /healthz
+    disk:
+      name: zips
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: elegansky-moto-relay-redis
+          property: connectionString
+      - key: ZIP_DIR
+        value: /var/data/zips
+      - key: ZIP_TTL_HOURS
+        value: "48"
+
+  - type: redis
+    name: elegansky-moto-relay-redis
+    plan: starter
+    maxmemoryPolicy: noeviction
+    ipAllowList: [] # only reachable from Render services
