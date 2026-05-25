@@ -20,12 +20,33 @@ const cache: Map<string, string> = new Map();
 let lastLoaded = 0;
 let lastError = "";
 let lastSource = "";
+let lastSampleRows: unknown[][] = []; // first 10 raw rows for debugging
+
+const PLATE_RE = /MC\d{3}[A-Z]{3}/; // substring — accept whatever surrounding noise
+const TIN_RE = /(\d[\d\s-]{8,}\d)/;  // 9+ digits possibly with spaces/hyphens
 
 function normPlate(s: string): string {
-  return String(s ?? "").trim().toUpperCase().replace(/\s+/g, "");
+  return String(s ?? "").trim().toUpperCase().replace(/[\s\-_]+/g, "");
 }
 function normTin(s: string): string {
   return String(s ?? "").replace(/\D+/g, "");
+}
+
+/** Find the first plate-shaped substring anywhere in a cell value. */
+function extractPlate(cell: unknown): string | null {
+  if (cell == null) return null;
+  const s = String(cell).toUpperCase().replace(/[\s\-_]+/g, "");
+  const m = s.match(/MC\d{3}[A-Z]{3}/);
+  return m ? m[0] : null;
+}
+
+/** Find the first 9-digit number anywhere in a cell value (hyphens/spaces ok). */
+function extractTin(cell: unknown): string | null {
+  if (cell == null) return null;
+  const digits = String(cell).replace(/\D+/g, "");
+  if (digits.length < 9) return null;
+  // Take exactly 9 digits — handles 9-digit TINs and discards weirdly-long numbers.
+  return digits.length === 9 ? digits : null;
 }
 
 async function buildAuth() {
@@ -44,15 +65,39 @@ async function buildAuth() {
   return await auth.getClient() as never;
 }
 
-/** Build plate→tin map from rows where r[1] is plate (col B) and r[8] is TIN (col I). */
+/**
+ * Build plate→tin map robustly.
+ *
+ * For each row: scan ALL cells, find the first that contains a plate pattern
+ * (MC + 3 digits + 3 letters anywhere), and the first that contains a 9-digit
+ * number anywhere. This handles:
+ *   - leading/trailing spaces
+ *   - hyphens in TINs (145-678-901)
+ *   - column shifts (sheet uploaders sometimes rearrange columns)
+ *   - extra text inside cells
+ * If column B/I are present we still prefer them, but we fall back gracefully.
+ */
 function rowsToMap(rows: unknown[][]): Map<string, string> {
   const out = new Map<string, string>();
   for (const r of rows) {
-    const plate = normPlate((r?.[1] as string) ?? "");
-    const tin = normTin((r?.[8] as string) ?? "");
-    if (!/^MC\d{3}[A-Z]{3}$/.test(plate)) continue;
-    if (tin.length !== 9) continue;
-    out.set(plate, tin);
+    if (!Array.isArray(r) || r.length === 0) continue;
+    // Prefer the documented columns (B = idx 1, I = idx 8) when present.
+    let plate = extractPlate(r[1]);
+    let tin = extractTin(r[8]);
+    // Fall back to scanning the whole row.
+    if (!plate) {
+      for (const cell of r) {
+        plate = extractPlate(cell);
+        if (plate) break;
+      }
+    }
+    if (!tin) {
+      for (const cell of r) {
+        tin = extractTin(cell);
+        if (tin) break;
+      }
+    }
+    if (plate && tin) out.set(plate, tin);
   }
   return out;
 }
@@ -73,16 +118,20 @@ async function loadViaSheetsApi(authClient: never): Promise<Map<string, string> 
       const first = tabs[0]?.properties?.title;
       if (!first) throw new Error("first sheet has no title");
       const res = await sheets.spreadsheets.values.get({
-        spreadsheetId: config.LOOKUP_SHEET_ID, range: `${first}!A:I`, majorDimension: "ROWS",
+        spreadsheetId: config.LOOKUP_SHEET_ID, range: `${first}!A:Z`, majorDimension: "ROWS",
       });
       lastSource = `Sheets API (${first}, gid not found)`;
-      return rowsToMap(res.data.values ?? []);
+      const rows = res.data.values ?? [];
+      _rawRowsForDebug = rows as unknown[][];
+      return rowsToMap(rows);
     }
     const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: config.LOOKUP_SHEET_ID, range: `${hit.properties.title}!A:I`, majorDimension: "ROWS",
+      spreadsheetId: config.LOOKUP_SHEET_ID, range: `${hit.properties.title}!A:Z`, majorDimension: "ROWS",
     });
     lastSource = `Sheets API (${hit.properties.title})`;
-    return rowsToMap(res.data.values ?? []);
+    const rows = res.data.values ?? [];
+    _rawRowsForDebug = rows as unknown[][];
+    return rowsToMap(rows);
   } catch (e) {
     const msg = (e as Error).message || "";
     // "Office file" error = uploaded .xlsx; fall through to Drive download path.
@@ -123,16 +172,22 @@ async function loadViaDrive(authClient: never): Promise<Map<string, string>> {
   const sheet = wb.Sheets[sheetName];
   if (!sheet) throw new Error(`xlsx sheet ${sheetName} missing`);
   const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: "" });
+  _rawRowsForDebug = rows;
   lastSource = `Drive download (${meta.data.name ?? "?"} / ${sheetName})`;
   return rowsToMap(rows);
 }
 
+/** Re-run from inside loadViaSheetsApi/loadViaDrive but exposing the raw rows. */
+let _rawRowsForDebug: unknown[][] = [];
+
 async function loadOnce(): Promise<void> {
   const authClient = await buildAuth();
+  _rawRowsForDebug = [];
   let next = await loadViaSheetsApi(authClient);
   if (!next) next = await loadViaDrive(authClient);
   cache.clear();
   for (const [k, v] of next) cache.set(k, v);
+  lastSampleRows = _rawRowsForDebug.slice(0, 10);
   lastLoaded = Date.now();
   lastError = "";
   console.log(`[sheets] loaded ${cache.size} plate→TIN entries via ${lastSource}`);
@@ -167,5 +222,23 @@ export function lookupStats() {
     source: lastSource || null,
     sheetId: config.LOOKUP_SHEET_ID,
     gid: config.LOOKUP_SHEET_GID,
+  };
+}
+
+/** Debug helper — first 10 raw rows + sample of cached entries. */
+export function lookupDebug() {
+  const sample: Array<[string, string]> = [];
+  let i = 0;
+  for (const [k, v] of cache) {
+    sample.push([k, v]);
+    if (++i >= 10) break;
+  }
+  return {
+    entries: cache.size,
+    source: lastSource,
+    firstRows: lastSampleRows.map((r) =>
+      Array.isArray(r) ? r.map((c) => (c == null ? null : String(c).slice(0, 40))) : r,
+    ),
+    sample,
   };
 }

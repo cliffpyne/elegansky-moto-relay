@@ -4,7 +4,7 @@ import { z } from "zod";
 import * as store from "./store.js";
 import type { Card, Status } from "./store.js";
 import { uiPage } from "./uiPage.js";
-import { lookupTin, lookupStats } from "./sheets.js";
+import { lookupTin, lookupStats, lookupDebug } from "./sheets.js";
 
 /** Parse a queue.json row (from motoOwnership/queue.json) into a relay Card. */
 function fromQueueRow(row: Record<string, unknown>): Card | null {
@@ -46,6 +46,7 @@ export function buildServer() {
     return { plate, tin: tin ?? null };
   });
   app.get("/api/lookup-stats", async () => lookupStats());
+  app.get("/api/lookup-debug", async () => lookupDebug());
 
   // --- Admin dashboard (public, read-only) ---
   app.get("/", async (_req, reply) => reply.type("text/html").send(uiPage()));
