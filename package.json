@@ -13,6 +13,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@fastify/cors": "^11.2.0",
     "@fastify/multipart": "^8.3.0",
     "fastify": "^4.28.1",
     "googleapis": "^172.0.0",

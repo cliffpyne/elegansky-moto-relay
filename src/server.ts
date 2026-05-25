@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import fastifyMultipart from "@fastify/multipart";
+import fastifyCors from "@fastify/cors";
 import { z } from "zod";
 import * as store from "./store.js";
 import type { Card, Status } from "./store.js";
@@ -35,6 +36,9 @@ function fromQueueRow(row: Record<string, unknown>): Card | null {
 
 export function buildServer() {
   const app = Fastify({ logger: true, bodyLimit: 32 * 1024 * 1024 });
+  // Allow MotoPack (Capacitor WebView origin = https://localhost) + browsers
+  // to call our /api/* endpoints. Public read-only data; no credentials.
+  app.register(fastifyCors, { origin: true, credentials: false });
   app.register(fastifyMultipart, { limits: { fileSize: 32 * 1024 * 1024 } });
 
   app.get("/healthz", async () => ({ ok: true }));
