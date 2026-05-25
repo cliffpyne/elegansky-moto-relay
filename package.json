@@ -17,6 +17,7 @@
     "fastify": "^4.28.1",
     "googleapis": "^172.0.0",
     "ioredis": "^5.4.1",
+    "xlsx": "^0.18.5",
     "zod": "^3.23.8"
   },
   "devDependencies": {
