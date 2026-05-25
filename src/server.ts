@@ -4,6 +4,7 @@ import { z } from "zod";
 import * as store from "./store.js";
 import type { Card, Status } from "./store.js";
 import { uiPage } from "./uiPage.js";
+import { lookupTin, lookupStats } from "./sheets.js";
 
 /** Parse a queue.json row (from motoOwnership/queue.json) into a relay Card. */
 function fromQueueRow(row: Record<string, unknown>): Card | null {
@@ -37,6 +38,14 @@ export function buildServer() {
   app.register(fastifyMultipart, { limits: { fileSize: 32 * 1024 * 1024 } });
 
   app.get("/healthz", async () => ({ ok: true }));
+
+  // --- Fast plate → TIN lookup (server-side cache, ~O(1)) ---
+  app.get("/api/lookup-tin", async (req) => {
+    const plate = String((req.query as { plate?: string }).plate ?? "");
+    const tin = lookupTin(plate);
+    return { plate, tin: tin ?? null };
+  });
+  app.get("/api/lookup-stats", async () => lookupStats());
 
   // --- Admin dashboard (public, read-only) ---
   app.get("/", async (_req, reply) => reply.type("text/html").send(uiPage()));

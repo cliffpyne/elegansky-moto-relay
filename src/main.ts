@@ -1,5 +1,6 @@
 import { buildServer } from "./server.js";
 import { cleanupOldZips } from "./store.js";
+import { startSheetsCache } from "./sheets.js";
 import { config } from "./config.js";
 
 const app = buildServer();
@@ -21,3 +22,6 @@ setInterval(() => {
     .then((n) => { if (n) console.log(`cleanup: removed ${n} old zip(s)`); })
     .catch((e) => console.error("cleanup error:", (e as Error).message));
 }, 60 * 60 * 1000);
+
+// Warm the plate→TIN cache so MotoPack auto-fill is instant.
+void startSheetsCache();
