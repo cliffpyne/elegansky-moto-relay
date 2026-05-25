@@ -22,14 +22,8 @@ let lastError = "";
 let lastSource = "";
 let lastSampleRows: unknown[][] = []; // first 10 raw rows for debugging
 
-const PLATE_RE = /MC\d{3}[A-Z]{3}/; // substring — accept whatever surrounding noise
-const TIN_RE = /(\d[\d\s-]{8,}\d)/;  // 9+ digits possibly with spaces/hyphens
-
 function normPlate(s: string): string {
   return String(s ?? "").trim().toUpperCase().replace(/[\s\-_]+/g, "");
-}
-function normTin(s: string): string {
-  return String(s ?? "").replace(/\D+/g, "");
 }
 
 /** Find the first plate-shaped substring anywhere in a cell value. */
@@ -40,13 +34,21 @@ function extractPlate(cell: unknown): string | null {
   return m ? m[0] : null;
 }
 
-/** Find the first 9-digit number anywhere in a cell value (hyphens/spaces ok). */
-function extractTin(cell: unknown): string | null {
+/**
+ * Extract a NEW-owner TIN from a cell. Must look like the hyphenated format
+ * (e.g. "142-861-933") so we don't accidentally pick up the operator's own
+ * TIN from elsewhere in the row. The operator's own TIN is always excluded.
+ */
+function extractValidTin(cell: unknown): string | null {
   if (cell == null) return null;
-  const digits = String(cell).replace(/\D+/g, "");
-  if (digits.length < 9) return null;
-  // Take exactly 9 digits — handles 9-digit TINs and discards weirdly-long numbers.
-  return digits.length === 9 ? digits : null;
+  const s = String(cell).trim();
+  if (!s) return null;
+  const m = s.match(/\d{3}-\d{3}-\d{3}/);
+  if (!m) return null;
+  const digits = m[0].replace(/\D+/g, "");
+  if (digits.length !== 9) return null;
+  if (digits === config.OWN_TIN) return null;
+  return digits;
 }
 
 async function buildAuth() {
@@ -66,38 +68,38 @@ async function buildAuth() {
 }
 
 /**
- * Build plate→tin map robustly.
- *
- * For each row: scan ALL cells, find the first that contains a plate pattern
- * (MC + 3 digits + 3 letters anywhere), and the first that contains a 9-digit
- * number anywhere. This handles:
- *   - leading/trailing spaces
- *   - hyphens in TINs (145-678-901)
- *   - column shifts (sheet uploaders sometimes rearrange columns)
- *   - extra text inside cells
- * If column B/I are present we still prefer them, but we fall back gracefully.
+ * Build plate→tin map. Plate comes from LOOKUP_PLATE_COL_IDX (default col B);
+ * TIN comes from LOOKUP_TIN_COL_IDX (default col K, the hyphenated new-owner
+ * TIN). Both have safe fallbacks:
+ *   - if the plate cell is empty/wrong, scan all cells for the plate pattern
+ *   - if the TIN cell is empty/wrong, scan cells AT-OR-AFTER the TIN col for
+ *     a hyphenated TIN that isn't the operator's own
+ * Rows that don't yield BOTH a plate and a TIN are skipped (we'd rather
+ * auto-fill nothing than auto-fill the wrong TIN).
  */
 function rowsToMap(rows: unknown[][]): Map<string, string> {
   const out = new Map<string, string>();
+  const plateIdx = config.LOOKUP_PLATE_COL_IDX;
+  const tinIdx = config.LOOKUP_TIN_COL_IDX;
   for (const r of rows) {
     if (!Array.isArray(r) || r.length === 0) continue;
-    // Prefer the documented columns (B = idx 1, I = idx 8) when present.
-    let plate = extractPlate(r[1]);
-    let tin = extractTin(r[8]);
-    // Fall back to scanning the whole row.
+    let plate = extractPlate(r[plateIdx]);
     if (!plate) {
       for (const cell of r) {
         plate = extractPlate(cell);
         if (plate) break;
       }
     }
+    if (!plate) continue;
+    let tin = extractValidTin(r[tinIdx]);
     if (!tin) {
-      for (const cell of r) {
-        tin = extractTin(cell);
+      for (let i = tinIdx; i < r.length; i++) {
+        tin = extractValidTin(r[i]);
         if (tin) break;
       }
     }
-    if (plate && tin) out.set(plate, tin);
+    if (!tin) continue;
+    out.set(plate, tin);
   }
   return out;
 }

@@ -27,6 +27,17 @@ const schema = z.object({
   LOOKUP_SHEET_GID: z.coerce.number().int().default(1065051995),
   // Refresh the in-memory cache every N seconds (default 5 min).
   LOOKUP_REFRESH_SECONDS: z.coerce.number().positive().default(300),
+
+  // Column positions in the spreadsheet (0-based). Defaults match the
+  // current "Copy of Orodha_ya_Pikipiki_Zote1.xlsx" layout:
+  //   col B (idx 1)  = plate
+  //   col K (idx 10) = NEW owner TIN, hyphenated (e.g. "142-861-933")
+  LOOKUP_PLATE_COL_IDX: z.coerce.number().int().min(0).default(1),
+  LOOKUP_TIN_COL_IDX: z.coerce.number().int().min(0).default(10),
+
+  // TIN of the operator's own account (your company's) — never a valid
+  // answer for "new owner TIN" lookups, so always excluded.
+  OWN_TIN: z.string().default("103952131"),
 });
 
 const parsed = schema.safeParse(process.env);
