@@ -40,6 +40,10 @@ export function uiPage(): string {
   .pill{display:inline-block;padding:2px 7px;border-radius:10px;font-size:11px;font-weight:600;background:#0b2735}
   .copy-btn{background:transparent;border:1px solid #2a6a86;color:#9fd0e0;padding:2px 7px;font-size:11px;border-radius:6px;cursor:pointer}
   .copy-btn:hover{color:#fff;border-color:#7ec0ff}
+  .act-btn{display:inline-block;background:transparent;border:1px solid #2a6a86;color:#9fd0e0;padding:3px 8px;font-size:11px;border-radius:6px;cursor:pointer;text-decoration:none;margin-right:4px}
+  .act-btn:hover{color:#fff;border-color:#7ec0ff}
+  .act-retry:hover{border-color:#b5602a;color:#ffd24d}
+  .act-zip:hover{border-color:#46e08a;color:#46e08a}
   .scanner-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
   .scanner-row .pill{background:#1e4d63;padding:5px 10px;font-size:12px}
   .small{font-size:11px;color:#9fd0e0}
@@ -107,6 +111,7 @@ export function uiPage(): string {
             <th>App No / Reason</th>
             <th class="sortable" data-sort="uploadedAt">Uploaded <span class="arrow">↓</span></th>
             <th>Finished</th>
+            <th>Actions</th>
           </tr>
         </thead>
         <tbody id="rows"></tbody>
@@ -191,10 +196,21 @@ function render(){
     const a=th.querySelector('.arrow');
     a.textContent=th.dataset.sort===SORT.key?(SORT.dir>0?'↑':'↓'):'';
   });
+  const ZIP_TTL_MS = 48*60*60*1000;
   document.getElementById('rows').innerHTML=rows.map(c=>{
     const reason=c.appNo?'<code>'+esc(c.appNo)+'</code> <button class="copy-btn" data-copy="'+esc(c.appNo)+'">copy</button>'
       :c.error?'<span class="errcell">'+esc(c.error)+'</span>'
       :'';
+    const fromCloud = c.scannerName && c.scannerName !== 'bot-pc';
+    const recent = c.uploadedAt && (Date.now() - c.uploadedAt < ZIP_TTL_MS);
+    const canDownload = fromCloud && recent;
+    const canRetry = canDownload && (c.status === 'failed' || c.status === 'done' || c.status === 'downloaded' || c.status === 'processing');
+    const dl = canDownload
+      ? '<a class="act-btn act-zip" href="/api/zip/'+encodeURIComponent(c.id)+'" download>📥 zip</a>'
+      : '';
+    const rt = canRetry
+      ? '<button class="act-btn act-retry" data-retry="'+esc(c.id)+'">🔁 retry</button>'
+      : '';
     return '<tr>'+
       '<td><b>'+esc(c.plate)+'</b></td>'+
       '<td>'+esc(c.tin)+'</td>'+
@@ -206,6 +222,7 @@ function render(){
       '<td>'+reason+'</td>'+
       '<td class="small">'+fmtDt(c.uploadedAt)+'</td>'+
       '<td class="small">'+fmtDt(c.finishedAt)+'</td>'+
+      '<td>'+dl+rt+'</td>'+
       '</tr>';
   }).join('');
 }
@@ -239,10 +256,24 @@ document.querySelectorAll('th.sortable').forEach(th=>{
 });
 ['f-status','f-scanner','f-from','f-to'].forEach(id=>document.getElementById(id).addEventListener('change',render));
 document.getElementById('f-search').addEventListener('input',render);
-document.getElementById('rows').addEventListener('click',e=>{
-  const b=e.target.closest('[data-copy]'); if(!b) return;
-  navigator.clipboard.writeText(b.dataset.copy);
-  const o=b.textContent;b.textContent='copied!';setTimeout(()=>b.textContent=o,1200);
+document.getElementById('rows').addEventListener('click',async e=>{
+  const cp=e.target.closest('[data-copy]');
+  if(cp){
+    navigator.clipboard.writeText(cp.dataset.copy);
+    const o=cp.textContent;cp.textContent='copied!';setTimeout(()=>cp.textContent=o,1200);
+    return;
+  }
+  const rt=e.target.closest('[data-retry]');
+  if(rt){
+    if(!confirm('Re-queue this card for the bot to re-process?')) return;
+    rt.disabled=true;rt.textContent='⏳ retrying…';
+    try{
+      const r=await fetch('/api/jobs/'+encodeURIComponent(rt.dataset.retry)+'/retry',{method:'POST'});
+      const j=await r.json();
+      if(j.ok){rt.textContent='✓ queued';load();}
+      else{alert('Cannot retry: '+(j.error||'unknown')); rt.disabled=false;rt.textContent='🔁 retry';}
+    }catch(err){alert('Retry failed: '+err.message); rt.disabled=false;rt.textContent='🔁 retry';}
+  }
 });
 
 load();setInterval(load,5000);

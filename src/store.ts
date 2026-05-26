@@ -122,6 +122,23 @@ export async function upsertHistorical(card: Card): Promise<void> {
   await pipe.exec();
 }
 
+/** Does the zip blob for this card still exist on disk? */
+export async function hasZip(id: string): Promise<boolean> {
+  try { await stat(zipPath(id)); return true; } catch { return false; }
+}
+
+/** Put a card back in the pending-pull queue so the bot re-downloads + re-processes.
+ *  Works as long as the zip blob is still on disk (within ZIP_TTL_HOURS). */
+export async function requeue(id: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const card = await getCard(id);
+  if (!card) return { ok: false, reason: "card not found" };
+  if (!(await hasZip(id))) return { ok: false, reason: "zip no longer on disk (older than retention); ask the scanner to re-upload" };
+  const now = Date.now();
+  await redis.zadd(KEY_PENDING, now, id);
+  await patchCard(id, { status: "uploaded", error: undefined, appNo: undefined, finishedAt: undefined, ackedAt: undefined, startedAt: undefined });
+  return { ok: true };
+}
+
 /** Background sweep: delete zip blobs older than ZIP_TTL_HOURS. */
 export async function cleanupOldZips(): Promise<number> {
   const cutoff = Date.now() - config.ZIP_TTL_HOURS * 60 * 60 * 1000;

@@ -131,6 +131,19 @@ export function buildServer() {
     return { ok: true, card: updated };
   });
 
+  // --- Admin actions from the public dashboard ---
+  app.post("/api/jobs/:id/retry", async (req, reply) => {
+    const id = (req.params as { id: string }).id;
+    const r = await store.requeue(id);
+    if (!r.ok) return reply.code(400).send({ ok: false, error: r.reason });
+    return { ok: true };
+  });
+
+  app.get("/api/zip-status/:id", async (req) => {
+    const id = (req.params as { id: string }).id;
+    return { id, hasZip: await store.hasZip(id) };
+  });
+
   // --- One-shot history import (queue.json from the bot PC) ---
   // Accepts either an array of rows or { items: [...] }. Idempotent.
   app.post("/api/import-history", async (req, reply) => {
