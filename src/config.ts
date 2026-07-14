@@ -22,18 +22,23 @@ const schema = z.object({
   // it round-trips through Render env vars (same pattern as elegansky-m6pm).
   // Leave GOOGLE_CREDENTIALS_B64 blank to disable the lookup endpoint.
   GOOGLE_CREDENTIALS_B64: z.string().optional().default(""),
-  LOOKUP_SHEET_ID: z.string().default("1HJHu0nI_KRvkeMMI4cFYhK0IcqijCh-v"),
-  // The gid of the sheet tab to read (B = plate, I = TIN with hyphens).
-  LOOKUP_SHEET_GID: z.coerce.number().int().default(1065051995),
+  // New sheet (EFD-receipt era): plate in col A, TIN in col H. TIN may or may
+  // not have hyphens — the loader accepts both shapes.
+  LOOKUP_SHEET_ID: z.string().default("1_w5qvzrHPiH7dnH0WPpIhfB_wZLsjKXk"),
+  LOOKUP_SHEET_GID: z.coerce.number().int().default(0),
+  /** When true, walk EVERY tab of LOOKUP_SHEET_ID (assumes shared layout).
+   *  Set true for multi-tab files like Frank Mlaki PikiPiki.xlsx. */
+  LOOKUP_ALL_TABS: z
+    .preprocess((v) => (typeof v === "string" ? v.toLowerCase() === "true" : v), z.boolean())
+    .default(true),
   // Refresh the in-memory cache every N seconds (default 5 min).
   LOOKUP_REFRESH_SECONDS: z.coerce.number().positive().default(300),
 
-  // Column positions in the spreadsheet (0-based). Defaults match the
-  // current "Copy of Orodha_ya_Pikipiki_Zote1.xlsx" layout:
-  //   col B (idx 1)  = plate
-  //   col K (idx 10) = NEW owner TIN, hyphenated (e.g. "142-861-933")
-  LOOKUP_PLATE_COL_IDX: z.coerce.number().int().min(0).default(1),
-  LOOKUP_TIN_COL_IDX: z.coerce.number().int().min(0).default(10),
+  // Column positions in the spreadsheet (0-based).
+  //   col A (idx 0)  = plate
+  //   col H (idx 7)  = new-owner TIN (with or without hyphens)
+  LOOKUP_PLATE_COL_IDX: z.coerce.number().int().min(0).default(0),
+  LOOKUP_TIN_COL_IDX: z.coerce.number().int().min(0).default(7),
 
   // TIN of the operator's own account (your company's) — never a valid
   // answer for "new owner TIN" lookups, so always excluded.

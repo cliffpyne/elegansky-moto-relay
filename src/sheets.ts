@@ -35,17 +35,25 @@ function extractPlate(cell: unknown): string | null {
 }
 
 /**
- * Extract a NEW-owner TIN from a cell. Must look like the hyphenated format
- * (e.g. "142-861-933") so we don't accidentally pick up the operator's own
- * TIN from elsewhere in the row. The operator's own TIN is always excluded.
+ * Extract a NEW-owner TIN from a cell. The new sheet (1rJD…) holds TINs in
+ * col H either hyphenated ("142-895-854") or plain ("142895854"); both are
+ * accepted. The operator's own TIN is always excluded. Returns 9 plain digits.
  */
 function extractValidTin(cell: unknown): string | null {
   if (cell == null) return null;
   const s = String(cell).trim();
   if (!s) return null;
-  const m = s.match(/\d{3}-\d{3}-\d{3}/);
-  if (!m) return null;
-  const digits = m[0].replace(/\D+/g, "");
+  // First try hyphenated 3-3-3.
+  let m: RegExpMatchArray | null = s.match(/\b\d{3}-\d{3}-\d{3}\b/);
+  let digits: string;
+  if (m) {
+    digits = m[0].replace(/\D+/g, "");
+  } else {
+    // Fall back to a bare 9-digit run.
+    m = s.match(/\b\d{9}\b/);
+    if (!m) return null;
+    digits = m[0];
+  }
   if (digits.length !== 9) return null;
   if (digits === config.OWN_TIN) return null;
   return digits;
@@ -104,7 +112,8 @@ function rowsToMap(rows: unknown[][]): Map<string, string> {
   return out;
 }
 
-/** Native Google Sheet path: read just B:I via Sheets API for the requested gid. */
+/** Native Google Sheet path. When LOOKUP_ALL_TABS is true, walk every tab
+ *  (all tabs must share the plate/TIN column layout). Otherwise honour GID. */
 async function loadViaSheetsApi(authClient: never): Promise<Map<string, string> | null> {
   const sheets = google.sheets({ version: "v4", auth: authClient });
   try {
@@ -113,27 +122,30 @@ async function loadViaSheetsApi(authClient: never): Promise<Map<string, string> 
       fields: "sheets(properties(sheetId,title))",
     });
     const tabs = meta.data.sheets ?? [];
-    const hit = tabs.find((t) => t.properties?.sheetId === config.LOOKUP_SHEET_GID);
-    if (!hit?.properties?.title) {
-      // Fall back to first sheet if the gid isn't present (e.g. on conversion).
-      if (!tabs.length) throw new Error("spreadsheet has no sheets");
-      const first = tabs[0]?.properties?.title;
-      if (!first) throw new Error("first sheet has no title");
-      const res = await sheets.spreadsheets.values.get({
-        spreadsheetId: config.LOOKUP_SHEET_ID, range: `${first}!A:Z`, majorDimension: "ROWS",
-      });
-      lastSource = `Sheets API (${first}, gid not found)`;
-      const rows = res.data.values ?? [];
-      _rawRowsForDebug = rows as unknown[][];
-      return rowsToMap(rows);
+    if (!tabs.length) throw new Error("spreadsheet has no sheets");
+
+    // Decide which tab titles to fetch.
+    let titles: string[];
+    if (config.LOOKUP_ALL_TABS) {
+      titles = tabs.map((t) => t.properties?.title).filter(Boolean) as string[];
+    } else {
+      const hit = tabs.find((t) => t.properties?.sheetId === config.LOOKUP_SHEET_GID);
+      const one = hit?.properties?.title ?? tabs[0]?.properties?.title;
+      if (!one) throw new Error("no tab title resolved");
+      titles = [one];
     }
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: config.LOOKUP_SHEET_ID, range: `${hit.properties.title}!A:Z`, majorDimension: "ROWS",
-    });
-    lastSource = `Sheets API (${hit.properties.title})`;
-    const rows = res.data.values ?? [];
-    _rawRowsForDebug = rows as unknown[][];
-    return rowsToMap(rows);
+
+    const all: unknown[][] = [];
+    for (const title of titles) {
+      const res = await sheets.spreadsheets.values.get({
+        spreadsheetId: config.LOOKUP_SHEET_ID, range: `${title}!A:Z`, majorDimension: "ROWS",
+      });
+      const rows = (res.data.values ?? []) as unknown[][];
+      for (const r of rows) all.push(r);
+    }
+    lastSource = `Sheets API (${titles.join(", ")})`;
+    _rawRowsForDebug = all;
+    return rowsToMap(all);
   } catch (e) {
     const msg = (e as Error).message || "";
     // "Office file" error = uploaded .xlsx; fall through to Drive download path.
@@ -168,15 +180,20 @@ async function loadViaDrive(authClient: never): Promise<Map<string, string>> {
     buf = Buffer.from(res.data as ArrayBuffer);
   }
   const wb = XLSX.read(buf, { type: "buffer" });
-  // First sheet by default — gid doesn't apply to raw xlsx.
-  const sheetName = wb.SheetNames[0];
-  if (!sheetName) throw new Error("xlsx has no sheets");
-  const sheet = wb.Sheets[sheetName];
-  if (!sheet) throw new Error(`xlsx sheet ${sheetName} missing`);
-  const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: "" });
-  _rawRowsForDebug = rows;
-  lastSource = `Drive download (${meta.data.name ?? "?"} / ${sheetName})`;
-  return rowsToMap(rows);
+  // Walk every tab when LOOKUP_ALL_TABS is set (multi-tab xlsx like Frank
+  // Mlaki PikiPiki), otherwise just the first tab.
+  const tabNames = config.LOOKUP_ALL_TABS ? wb.SheetNames.slice() : wb.SheetNames.slice(0, 1);
+  if (!tabNames.length) throw new Error("xlsx has no sheets");
+  const all: unknown[][] = [];
+  for (const name of tabNames) {
+    const sh = wb.Sheets[name];
+    if (!sh) continue;
+    const rows = XLSX.utils.sheet_to_json<unknown[]>(sh, { header: 1, defval: "" });
+    for (const r of rows) all.push(r);
+  }
+  _rawRowsForDebug = all;
+  lastSource = `Drive download (${meta.data.name ?? "?"} / ${tabNames.join(", ")})`;
+  return rowsToMap(all);
 }
 
 /** Re-run from inside loadViaSheetsApi/loadViaDrive but exposing the raw rows. */
